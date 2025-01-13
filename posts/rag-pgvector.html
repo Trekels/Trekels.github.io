@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <meta name="description" content="A webdevs blog - rag with pgvector">
+  <meta name="keywords" content="webdev, blog, tech, development, programming">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:ital,wght@0,100..700;1,100..700&display=swap" rel="stylesheet">
+
+  <title>A webdevs blog - pgvector</title>
+
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+
+  <style type="text/css">
+    body {
+      margin: 20px auto;
+      max-width: 650px;
+      line-height: 1.6;
+      font-size: 16px;
+      background-color: #222;
+      color: white;
+      padding: 0 5px;
+      font-family: "Roboto Mono", serif;
+    }
+
+    h1, h2, h3 { line-height: 1.6; padding-top: 10px; }
+    a { color: mediumseagreen }
+    ul {
+      padding: 0;
+      list-style-type: none;
+    }
+    pre {
+      padding: 10px 0;
+      font-size: 14px;
+      overflow: scroll;
+      color: mediumseagreen;
+      background-color: black;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1 style="margin-bottom: 0;">
+      RAG with postgres
+    </h1>
+    <small><a href="/index.html"> < home</a></small>
+  </header>
+
+  <p>
+    Using postgres with pgvector for similarity search. To build custom 
+    <abbr>RAG</abbr> <small>(retrieval-augmented generation)</small> solutions.
+
+    Using postgres in tandem with the pgvector extension is a powerful way to 
+    enable similarity search in your applications.
+  </p>
+
+
+  <h2>What is this RAG?</h2>
+
+  <p>
+    LLM models often miss (some) information needed to give a good answer to certain questions,
+    Data generated after the cut-off date, inaccessibility to private data, ...
+  </p>
+  <p>
+    Via RAG we can optimise the output of a llm, so it references a knowledge outside of its 
+    training data sources and use it to generate a response.
+  </p>
+    For example, if the model has no knowledge on an internal pdf manual and you try to ask it,
+    <i>“What is the best way to replace part x?”</i> you'll probably get an incorrect answer.
+  </p>
+  <p>
+    In this case, you can transform the prompt
+    by adding context:
+  </p>
+  <p>
+    <i>
+      “Replacing part x requires tools y and z, first you screw loose the upper and lower part, ...
+      . What is the best way to replace part x”.
+    </i>
+  </p>
+  <p>
+    The context is usualy loaded form the pdf beforhand and based on the question, the rag system can 
+    append/prepend it as context before sending it to the llm.
+  </p>
+
+  <h2>What do vectors have to do with it?</h2>
+
+
+  <h2>Setting up pgvector with docker-compose.</h2>
+
+  <p>
+    Using docker is the fastest way to get started. Below is a docker-compose file
+    that will spinn up a postgres instance with the pgvector extension installed.
+
+    <pre>
+    -- docker-compose.yaml
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        ports:
+          - 5432:5432
+        environment:
+          - POSTGRES_DB=vectordb
+          - POSTGRES_USER=dev
+          - POSTGRES_PASSWORD=dev
+          - POSTGRES_HOST_AUTH_METHOD=trust
+        volumes:
+          - vector_db_data:/var/lib/postgresql/data
+        labels:
+          - "vector.postgres.service=web"
+    
+    volumes:
+      vector_db_data:
+    </pre>
+    
+  </p>
+  <p>
+    While the extension is installed, you still need to create the extension in your
+    database. You can do this by connecting to the database and running the following.
+
+    <pre>
+      -- sql
+      CREATE EXTENSION IF NOT EXISTS vector;
+    </pre>
+
+    To have the extension available in all new databases, you can add a init script.
+
+    <pre>
+      -- docker-compose.yaml
+      volumes:
+        - ./init.sql:/docker-entrypoint-initdb.d/db.sql
+        - vector_db_data:/var/lib/postgresql/data
+    </pre>
+
+    Above config binds the locale `init.sql` file to the `docker-entrypoint-initdb.d` directory inside the container.
+    Additionally, you can print out the installed version of the extension by adding the second query.
+
+    <pre>
+      -- init.sql
+      CREATE EXTENSION IF NOT EXISTS vector;
+      SELECT extversion FROM pg_extension WHERE extname = 'vector';
+    </pre>
+
+    Start the container with `docker-compose up`.
+  </p>
+
+  <h2>Creating vector embeddings.</h2>
+  
+  <p>
+    The pgvector extension provides a `vector` type that can be used to store embeddings.
+    Creating a table with a vector column can be done as follows:
+  </p>
+
+  <pre>
+    -- sql
+    CREATE TABLE embeddings (
+      id serial PRIMARY KEY,
+      content text,
+      embedding vector(3)
+    );
+  </pre>
+
+  <p>
+    The `vector` type can store embeddings of any dimension. In the example above, we store embeddings of dimension 3.
+  </p>
+  <p>
+    This dimention size is depending on the embedding model you are using <small>(later more on that)</small>.
+    For example OpenAI `text-embedding-3-small` uses a 1536 dimentional vector.
+  </p>
+  <p>
+    You can simply insert vectors into the table as you would otherwise.
+  </p>
+
+  <pre>
+    -- sql
+    INSERT INTO embeddings (embedding) VALUES ('som value', '[1,2,3]'), ('other value', '[4,5,6]');
+  </pre>
+
+  <h2>Retrieving embedded data </h2>
+
+  <p>
+    The vector extension provides a `<=>` operator that can be used to calculate the cosine distance between two vectors.
+    Other types:
+    <ul>
+      <li>`<->` - euclidean distance</li>
+      <li>`<#>` - negative inner product</li>
+      <li>`...` - <a href="https://github.com/pgvector/pgvector?tab=readme-ov-file#halfvec-operators">more</a></li>
+    </ul>
+  </p>
+
+  <pre>
+    -- sql
+    SELECT id, embedding, embedding <=> '[1,2,3]' as similarity  FROM item ORDER BY embedding <=> '[1,2,3]' LIMIT 5;
+  </pre>
+  <pre>
+    -- result<samp>
+    ID | embedding | similarity
+    1     [1,2,3]    0
+    2     [4,5,6]    0.025368...</samp>
+  </pre>
+
+  <p>
+    Range of cosine distance is from 0 to 2, 0 — identical vectors, 1 — no correlation, 2 — absolutely different.
+  </p>
+  <p>
+    As in the result, the first row has a cosine distance of 0, which means it is an identical vector.
+    The second row has a cosine distance of 0.025368, which means it is differen but fairly similar to the query vector.
+  </p>
+
+  <!-- <h3>Next: <a href="/posts/rag-pgvector-nodejs.html">using pgvector in nodejs</a></h2> -->
+
+  <h3>Sources:</h3>
+  <dl>
+    <dt><a href="https://github.com/pgvector/pgvector">https://github.com/pgvector/pgvector</a></dt>
+  </dl>
+
+  <small>Last edit: <small>10 Jan. 2025</sub></p>
+</body>
+<script defer src="https://cloud.umami.is/script.js" data-website-id="f777acb2-dd03-48f2-9452-767d27148b2b"></script>
+</html>
